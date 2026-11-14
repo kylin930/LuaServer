@@ -1,11 +1,12 @@
 -- core/logger.lua — 线程安全的请求日志与计数
 --
--- 工作线程只做两件事：累加 AtomicInteger 计数、把日志行 offer 进 LinkedBlockingQueue。
--- 主线程用 drain() 取走日志并写入 history，因此 UI 永远只在主线程更新。
+-- 工作线程只做两件事：累加 Atomic 计数、把日志行 offer 进 LinkedBlockingQueue。
+-- 主线程/Service 心跳线程用 drain() 取走日志并写入 history，因此不会跨线程操作 View。
 local M = {}
 
 local LinkedBlockingQueue = luajava.bindClass "java.util.concurrent.LinkedBlockingQueue"
 local AtomicInteger = luajava.bindClass "java.util.concurrent.atomic.AtomicInteger"
+local AtomicLong = luajava.bindClass "java.util.concurrent.atomic.AtomicLong"
 
 local SEP = string.char(31)
 local osdate = os.date
@@ -33,6 +34,9 @@ function M.new(limit)
     success = AtomicInteger(0),
     failure = AtomicInteger(0),
     active = AtomicInteger(0),
+    totalMs = AtomicLong(0),
+    countedMs = AtomicInteger(0),
+    bytesOut = AtomicLong(0),
     history = {},
     version = 0,
   }, Logger)
@@ -43,15 +47,22 @@ local function encode(kind, time, method, path, status, ms, client)
 end
 
 --- 工作线程调用：记录一次请求
-function Logger:request(method, path, status, ms, client)
+-- bytes 为本次响应正文字节数（未知时传 nil）
+function Logger:request(method, path, status, ms, client, bytes)
   self.total.incrementAndGet()
   if status and status >= 400 then
     self.failure.incrementAndGet()
   else
     self.success.incrementAndGet()
   end
-  self.queue.offer(encode("req", osdate("%H:%M:%S"), clean(method, 12), clean(path, 120),
-    status or 0, ms or 0, clean(client, 40)))
+  local cost = tonumber(ms) or 0
+  if cost > 0 then
+    self.totalMs.addAndGet(math.floor(cost))
+    self.countedMs.incrementAndGet()
+  end
+  if bytes and bytes > 0 then self.bytesOut.addAndGet(bytes) end
+  self.queue.offer(encode("req", osdate("%H:%M:%S"), clean(method, 12), clean(path, 160),
+    status or 0, cost, clean(client, 40)))
 end
 
 --- 工作线程调用：记录一条服务器事件
@@ -107,12 +118,60 @@ function Logger:historySnapshot()
   return self.history
 end
 
+--- 把队列里的新日志并入历史，返回是否有变化
+function Logger:sync()
+  local entries = self:drain()
+  if #entries > 0 then
+    self:pushHistory(entries)
+    return true
+  end
+  return false
+end
+
+--- 平均响应时间（毫秒）
+function Logger:averageMs()
+  local count = self.countedMs.get()
+  if count <= 0 then return 0 end
+  return self.totalMs.get() / count
+end
+
 function Logger:stats()
   return {
     total = self.total.get(),
     success = self.success.get(),
     failure = self.failure.get(),
     active = self.active.get(),
+    avgMs = self:averageMs(),
+    bytesOut = self.bytesOut.get(),
+  }
+end
+
+--- 导出为可 JSON 化的快照（供 core/store 下发给 Activity）
+function Logger:toSnapshot(maxEntries)
+  maxEntries = maxEntries or 120
+  local stats = self:stats()
+  local logs = {}
+  local count = math.min(#self.history, maxEntries)
+  for i = 1, count do
+    local entry = self.history[i]
+    logs[i] = {
+      k = entry.kind,
+      t = entry.time,
+      m = entry.method,
+      p = entry.path,
+      s = entry.status,
+      d = entry.ms,
+      c = entry.client,
+    }
+  end
+  return {
+    total = stats.total,
+    success = stats.success,
+    failure = stats.failure,
+    active = stats.active,
+    avgMs = stats.avgMs,
+    bytesOut = stats.bytesOut,
+    logs = logs,
   }
 end
 
@@ -122,6 +181,9 @@ function Logger:reset()
   self.total.set(0)
   self.success.set(0)
   self.failure.set(0)
+  self.totalMs.set(0)
+  self.countedMs.set(0)
+  self.bytesOut.set(0)
   self.history = {}
   self.version = self.version + 1
 end

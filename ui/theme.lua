@@ -15,6 +15,7 @@ local W = {
   TabLayout = luajava.bindClass "com.google.android.material.tabs.TabLayout",
   RadioGroup = luajava.bindClass "android.widget.RadioGroup",
   Radio = luajava.bindClass "com.google.android.material.radiobutton.MaterialRadioButton",
+  Switch = luajava.bindClass "com.google.android.material.materialswitch.MaterialSwitch",
   Linear = luajava.bindClass "android.widget.LinearLayout",
   Frame = luajava.bindClass "android.widget.FrameLayout",
   Scroll = luajava.bindClass "android.widget.ScrollView",
@@ -125,7 +126,6 @@ function M.card(children, opts)
     strokeWidth = opts.noStroke and "0dp" or "1dp",
     strokeColor = c.outlineVariant,
     CardBackgroundColor = opts.color or c.surfaceContainerLow,
-    ContentPadding = opts.padding or "0dp",
   }
   if opts.id then node.id = opts.id end
   for i = 1, #children do node[#node + 1] = children[i] end

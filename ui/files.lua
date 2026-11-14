@@ -40,8 +40,20 @@ end
 function M.new(app)
   local page = { app = app, views = {}, root = nil, rel = "" }
 
+  --- 服务运行中以服务实际使用的根目录为准，否则用本地配置
+  local function rootPath()
+    if app.controller and app.controller:isRunning() then
+      local state = app.controller.state
+      if state and type(state.rootPath) == "string" and state.rootPath ~= "" then
+        return state.rootPath
+      end
+    end
+    return app.config.rootPath
+  end
+  page.rootPath = rootPath
+
   local function absoluteDir()
-    return File(app.config.rootPath, page.rel)
+    return File(rootPath(), page.rel)
   end
 
   local function prompt(title, hint, positiveText, onConfirm, extraInput)
@@ -270,7 +282,7 @@ function M.new(app)
     views.fileList.removeAllViews()
     views.filePath.setText("/" .. (page.rel == "" and "" or (page.rel .. "/")))
 
-    local root = app.config.rootPath
+    local root = rootPath()
     local rootFile = File(root)
     local rootExists = false
     pcall(function() rootExists = rootFile.isDirectory() end)
@@ -405,7 +417,7 @@ function M.new(app)
     }, { paddingBottom = "10dp" })
 
     page.root = loadlayout(layout, views)
-    views.fileRootPath.setText(app.config.rootPath)
+    views.fileRootPath.setText(rootPath())
     views.fileNewFolder.setOnClickListener(function() createFolder() end)
     views.fileNewHtml.setOnClickListener(function() createHtml() end)
     views.fileReload.setOnClickListener(function() page.reload() end)
@@ -425,7 +437,7 @@ function M.new(app)
 
   function page.reload()
     if not page.root then build() end
-    page.views.fileRootPath.setText(app.config.rootPath)
+    page.views.fileRootPath.setText(rootPath())
     render()
   end
 

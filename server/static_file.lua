@@ -1,4 +1,4 @@
--- server/static_file.lua — 静态文件解析与发送（含路径穿越防护、目录索引、默认站点生成）
+-- server/static_file.lua — 静态文件解析与发送（路径穿越防护、目录索引、默认站点）
 local M = {}
 
 local File = luajava.bindClass "java.io.File"
@@ -8,19 +8,30 @@ local utils = require "core.utils"
 local fileMod = file
 local DEFAULT_SITE = require "www.seed"
 
---- 确保根目录存在，并在首次使用时写入默认站点
-function M.ensureRoot(rootPath)
+--- 确保根目录存在；仅在目录**新建**或 **为空** 时写入默认站点
+-- 这样既能在首次运行时自动建站，又不会污染用户已有的根目录内容。
+function M.ensureRoot(rootPath, seed)
   local root = File(rootPath)
+  local created = false
   if not root.exists() then
     local ok = pcall(function() return root.mkdirs() end)
     if not ok or not root.exists() then return nil, "无法创建网站根目录：" .. tostring(rootPath) end
+    created = true
   end
   if not root.isDirectory() then return nil, "网站根目录不是目录：" .. tostring(rootPath) end
   local canonical
   local ok = pcall(function() canonical = root.getCanonicalPath() end)
   if not ok or not canonical then return nil, "无法解析网站根目录：" .. tostring(rootPath) end
-  M.seedDefaultSite(root)
+  if seed ~= false and (created or M.isEmptyDir(root)) then M.seedDefaultSite(root) end
   return root, canonical
+end
+
+--- 目录是否为空（含无法列举的情况按非空处理，避免误写）
+function M.isEmptyDir(dir)
+  local entries = nil
+  local ok = pcall(function() entries = dir.listFiles() end)
+  if not ok or entries == nil then return false end
+  return #entries == 0
 end
 
 --- 默认站点只在 index.html 不存在时写入，避免覆盖用户内容
@@ -40,10 +51,14 @@ function M.seedDefaultSite(root)
   return true
 end
 
+--- 单段路径是否合法（拒绝控制字符、反斜杠、NUL，以及 Windows 保留字符）
 local function hasIllegalSegment(segment)
   if string.find(segment, "\\", 1, true) then return true end
   if string.find(segment, "%c") then return true end
   if string.find(segment, "\0", 1, true) then return true end
+  -- 允许中文、空格等 UTF-8 文件名；只拒绝文件系统层面的危险字符
+  if string.find(segment, "[\"?%*<>|]") then return true end
+  if #segment > 255 then return true end
   return false
 end
 
@@ -67,12 +82,23 @@ function M.resolve(rootFile, rootCanonical, decodedPath)
   local ok = pcall(function() canonical = target.getCanonicalPath() end)
   if not ok or not canonical then return nil, "illegal-segment" end
 
+  -- canonical path 必须仍在根目录内（可防符号链接逃逸）
   local prefix = rootCanonical
   if string.sub(prefix, -1) ~= "/" then prefix = prefix .. "/" end
   if canonical ~= rootCanonical and string.sub(canonical, 1, #prefix) ~= prefix then
     return nil, "outside-root"
   end
   return target, relative
+end
+
+--- 把相对目录编码成以 / 结尾的 URL 路径（逐段编码，保留分隔符）
+local function encodeDirPath(relative)
+  if relative == nil or relative == "" then return "/" end
+  local parts = {}
+  for segment in string.gmatch(relative, "[^/]+") do
+    parts[#parts + 1] = utils.urlEncode(segment)
+  end
+  return "/" .. table.concat(parts, "/") .. "/"
 end
 
 local function htmlPage(title, inner)
@@ -91,6 +117,10 @@ local function htmlPage(title, inner)
     "margin-bottom:8px;border:1px solid #dee6e5}",
     "li a:hover{border-color:#00696b}",
     "span.size{color:#6f7978;font-size:12px;flex:none}",
+    "@media (prefers-color-scheme:dark){",
+    "body{background:#101414;color:#e0e3e2}p.dir{color:#bfc9c8}",
+    "li a{background:#1a1f1f;color:#e0e3e2;border-color:#3f4948}",
+    "span.size{color:#89938f}}",
     "</style></head><body><main>", inner, "</main></body></html>",
   })
 end
@@ -101,18 +131,8 @@ local function sortByName(list)
   end)
 end
 
---- 把相对目录编码成以 / 结尾的 URL 路径（逐段编码，保留分隔符）
-local function encodeDirPath(relative)
-  if relative == nil or relative == "" then return "/" end
-  local parts = {}
-  for segment in string.gmatch(relative, "[^/]+") do
-    parts[#parts + 1] = utils.urlEncode(segment)
-  end
-  return "/" .. table.concat(parts, "/") .. "/"
-end
-
---- 目录索引页（没有默认首页时使用）
-function M.sendListing(out, dir, relative, headOnly)
+--- 目录索引页（仅在用户启用 directoryIndex 且没有默认首页时使用）
+function M.sendListing(out, dir, relative, headOnly, cacheMode)
   local entries = dir.listFiles()
   local dirs, files = {}, {}
   if entries then
@@ -161,10 +181,18 @@ function M.sendListing(out, dir, relative, headOnly)
     "<ul>", table.concat(items), "</ul>",
   }))
   return response.sendText(out, 200,
-    { "Content-Type: text/html; charset=utf-8", "Cache-Control: no-store" }, body, headOnly)
+    { "Content-Type: text/html; charset=utf-8",
+      "Cache-Control: " .. response.cacheControlFor(cacheMode) }, body, headOnly)
 end
 
---- 处理一次静态资源请求；返回 状态码, 写出失败原因（可选）
+--- 判断文件是否可读；不可读时返回 false
+local function isReadable(file)
+  local readable = false
+  pcall(function() readable = file.canRead() end)
+  return readable
+end
+
+--- 处理一次静态资源请求；返回 状态码, 写出失败原因, 字节数
 function M.serve(out, ctx, req, headOnly)
   local target, info = M.resolve(ctx.rootFile, ctx.rootCanonical, req.path)
   if not target then
@@ -172,27 +200,41 @@ function M.serve(out, ctx, req, headOnly)
     if info == "path-traversal" or info == "outside-root" then
       message = "请求路径越出了网站根目录，已拒绝访问"
     end
-    response.errorPage(out, 403, message, headOnly)
-    return 403
+    local code, err = response.errorPage(out, 403, message, headOnly)
+    return code, err, 0
   end
 
   local isDirectory = false
   pcall(function() isDirectory = target.isDirectory() end)
   if isDirectory then
+    -- 目录：优先默认首页
     local index = File(target, ctx.indexFile)
     local hasIndex = false
     pcall(function() hasIndex = index.isFile() end)
-    if hasIndex then return response.sendFile(out, index, headOnly) end
-    return M.sendListing(out, target, info, headOnly)
+    if hasIndex then return response.sendFile(out, index, headOnly, ctx.fileOptions) end
+
+    -- 没有首页：只有用户开启目录索引才列出内容，否则 403
+    if not ctx.directoryIndex then
+      local code, err = response.errorPage(out, 403,
+        "该目录没有默认首页，且目录索引未启用。可在「服务设置」中开启目录索引。", headOnly)
+      return code, err, 0
+    end
+    return M.sendListing(out, target, info, headOnly, ctx.cacheMode)
   end
 
   local isFile = false
   pcall(function() isFile = target.isFile() end)
   if not isFile then
-    response.errorPage(out, 404, "文件不存在：" .. req.path, headOnly)
-    return 404
+    local code, err = response.errorPage(out, 404, "文件不存在：" .. req.path, headOnly)
+    return code, err, 0
   end
-  return response.sendFile(out, target, headOnly)
+
+  if not isReadable(target) then
+    local code, err = response.errorPage(out, 403, "没有读取该文件的权限：" .. req.path, headOnly)
+    return code, err, 0
+  end
+
+  return response.sendFile(out, target, headOnly, ctx.fileOptions)
 end
 
 return M

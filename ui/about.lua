@@ -1,4 +1,4 @@
--- ui/about.lua — 关于：版本、简介、运行环境、许可
+-- ui/about.lua — 关于：版本、简介、运行环境、服务说明、许可
 local theme = require "ui.theme"
 
 local W = theme.W
@@ -41,7 +41,7 @@ function M.new(app)
         theme.heading(nil, "运行环境"),
         theme.kv("Android", "aboutAndroid", "—"),
         theme.kv("Lua", "aboutLua", "—"),
-        theme.kv("Java VM", "aboutVm", "—"),
+        theme.kv("Java VM", "aboutJavaVm", "—"),
         theme.kv("网站根目录", "aboutWebRoot", "—", { size = "12.5sp" }),
       }) }),
 
@@ -51,17 +51,30 @@ function M.new(app)
         theme.kv("默认监听", "aboutListen", "—"),
         theme.kv("并发上限", "aboutConcurrency", "—"),
         theme.kv("请求超时", "aboutTimeout", "—"),
+        theme.kv("目录索引", "aboutDirIndex", "—"),
+        theme.kv("缓存策略", "aboutCache", "—"),
+        theme.divider("14dp"),
         theme.caption(nil,
-          "第一版只在应用运行期间提供服务，尚未实现 Android 前台服务，"
-            .. "因此退出应用后服务会停止。若需要常驻运行，需要后续实现 Foreground Service。",
+          "服务器运行在 Android 前台服务中：离开本界面后仍会继续监听，并在通知栏显示当前状态。"
+            .. "Android 在极端内存压力下仍可能回收进程，因此不保证永久运行。",
           { marginTop = "12dp" }),
+      }) }),
+
+      theme.card({ theme.cardBody({
+        theme.heading(nil, "已支持的能力"),
+        theme.caption(nil,
+          "GET / HEAD / POST / OPTIONS；静态文件托管与 MIME 识别；ETag / Last-Modified 协商缓存；"
+            .. "目录索引（可选）；路径穿越防护；并发上限与请求超时；请求日志与统计。",
+          { marginTop = "8dp" }),
       }) }),
 
       theme.card({ theme.cardBody({
         theme.heading(nil, "许可与致谢"),
         theme.caption(nil, "本示例工程采用 MIT 许可证，可以自由修改和分发。"),
-        theme.caption(nil, "HTTP 解析、静态文件托管与路由均由 Lua 实现，"
-          .. "底层网络使用 Android 自带的 java.net.ServerSocket / java.net.Socket。", { marginTop = "8dp" }),
+        theme.caption(nil,
+          "HTTP 解析、静态文件托管与路由均由 Lua 实现，底层网络使用 Android 自带的 "
+            .. "java.net.ServerSocket / java.net.Socket。",
+          { marginTop = "8dp" }),
       }) }),
     }, { paddingBottom = "10dp" })
 
@@ -72,18 +85,35 @@ function M.new(app)
   function page.refresh()
     if not page.root then return end
     local views = page.views
+    -- 以服务快照为准；服务未运行时退回本地配置
+    local state = app.controller.state
+    local running = app.controller:isRunning()
     local cfg = app.config
-    views.aboutVersion.setText("版本 " .. safe(function() return activity.getVersionName("1.0") end, "1.0")
+
+    views.aboutVersion.setText("版本 " .. safe(function() return activity.getVersionName("0.2") end, "0.2")
       .. " · " .. safe(function() return activity.getPackageName() end, "未知包名"))
     views.aboutAndroid.setText("Android " .. safe(function() return Build.VERSION.RELEASE end, "?")
       .. "（API " .. safe(function() return Build.VERSION.SDK_INT end, "?") .. "）")
     views.aboutLua.setText(safe(function() return _VERSION end, "Lua"))
-    views.aboutVm.setText(safe(function() return System.getProperty("java.vm.version") end, "未知"))
-    views.aboutWebRoot.setText(cfg.rootPath)
-    views.aboutPort.setText(tostring(cfg.port))
-    views.aboutListen.setText(cfg.listenLan and "0.0.0.0（局域网）" or "127.0.0.1（仅本机）")
+    views.aboutJavaVm.setText(safe(function() return System.getProperty("java.vm.version") end, "未知"))
+    views.aboutWebRoot.setText(running and tostring(state.rootPath) or cfg.rootPath)
+
+    local port = running and state.port or cfg.port
+    local listenLan = running and state.listenLan or cfg.listenLan
+    views.aboutPort.setText(tostring(port))
+    views.aboutListen.setText(listenLan and "0.0.0.0（局域网）" or "127.0.0.1（仅本机）")
     views.aboutConcurrency.setText(tostring(cfg.maxConnections) .. " 个连接")
     views.aboutTimeout.setText(tostring(cfg.timeoutMs) .. " 毫秒")
+
+    local dirIndex = running and state.directoryIndex or cfg.directoryIndex
+    views.aboutDirIndex.setText(dirIndex and "已开启" or "已关闭（默认）")
+
+    local cacheMode = running and state.cacheMode or cfg.cacheMode
+    local cacheLabel = "协商缓存"
+    pcall(function()
+      cacheLabel = require("core.config").CACHE_LABELS[cacheMode] or cacheMode
+    end)
+    views.aboutCache.setText(cacheLabel)
   end
 
   function page.onShow()

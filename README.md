@@ -1,182 +1,216 @@
-# LuaServer
+# LuaServer v0.2
 
-在安卓手机上用 Lua 跑起来的本地 HTTP 服务器管理应用（NeLuaJ+ 工程，可直接打包为独立 APK）。
+安卓手机上的轻量本地 HTTP 服务器，业务逻辑用 Lua 编写，通过 NeLuaJ+ 的 Java 桥接调用 Android 原生 API。
+本轮升级重点：**HTTP/1.1 能力补全** + **Android 前台服务常驻** + **管理界面完善**。
 
-- 应用名 / 包名：`LuaServer` · `com.xiaolin.luaserver`
-- 运行环境：NeLuaJ+（LuaJ++ 1.0）+ Android `java.net.ServerSocket` / `java.net.Socket`
-- 界面：Material Design 3（`Theme_NeLuaJ_Material3_NoActionBar_ActionOverlay`），蓝绿色主色，深浅色跟随系统
+- 应用名 / 包名：`LuaServer` / `com.xiaolin.luaserver`（v0.2 / ver_code 2）
+- 运行环境：NeLuaJ+（LuaJ++）+ `java.net.ServerSocket`，无 NDK、无 Termux、无 Gradle 依赖
+- 界面：Material Design 3，蓝绿色主色，深浅色跟随系统
+
+## 0. v0.2 相对 v0.1 的变化
+
+| 方向 | 变化 |
+| --- | --- |
+| 后台运行 | **服务器改由 `LuaService` 前台服务托管**，关闭 Activity 后继续提供服务（实测 Activity 关闭后心跳持续 3 分钟以上不断） |
+| 状态通道 | 新增 `core/store.lua`：SharedPreferences JSON 心跳 + 命令队列，取代原来 Activity 内的直接引用 |
+| HTTP 方法 | 新增 POST 请求体读取、`OPTIONS`、正确的 `Allow` 头；静态路径 POST 返回 405 |
+| 缓存 | 新增 `ETag` / `Last-Modified` / `If-None-Match` / `If-Modified-Since` → 304，Cache-Control 可配置 4 档 |
+| 安全 | 目录索引**默认关闭**（403）；拦截 `Transfer-Encoding`+`Content-Length` 冲突；文件不可读返回 403 |
+| 并发 | 修复停启竞态：每次运行使用独立队列，`stop()` 等待工作线程真正退出 |
+| 统计 | 新增平均响应时间、已发送字节数 |
+| UI | 首页新增平均耗时/网站目录/已发送/复制地址；日志页新增搜索与状态码过滤；设置页新增目录索引与缓存策略 |
 
 ## 1. 快速开始
 
-1. 在 NeLuaJ+ 中打开本工程目录，运行 `main.lua`。
-2. 首页点击「启动服务器」。
-3. 手机浏览器访问 `http://127.0.0.1:8080`（默认端口）即可看到默认站点。
-4. 回到应用，「日志」页可以看到刚才的请求，首页的统计数字会同步增长。
-5. 首页再次点击「停止服务器」即可释放端口。
+1. 在 NeLuaJ+ 中打开工程目录，运行 `main.lua`。
+2. 首页点「启动服务器」→ 通知栏出现「LuaServer 正在运行」常驻通知。
+3. 手机浏览器访问 `http://127.0.0.1:8080`。
+4. 切到其他应用或锁屏，服务器继续工作；回到应用可看到统计与日志。
+5. 首页点「停止服务器」→ 通知消失，端口释放。
 
-打包：使用 NeLuaJ+ 的打包功能（`init.lua` 已包含 `app_name`、`package_name`、`ver_name`、`ver_code`、`min_sdk`、`target_sdk` 与 `INTERNET` 权限），无需改动 Gradle 或 NDK。
+打包：用 NeLuaJ+ 打包功能（`init.lua` 已含 `app_name`、`package_name`、`ver_name`、`ver_code`、`min_sdk`、`target_sdk`、主题与权限）。
 
 ## 2. 实际目录结构
 
 ```
 LuaServer/
-├── main.lua                  # 入口：组装外壳、生命周期（onDestroy 停止服务器）
-├── init.lua                  # 打包配置（应用名、包名、SDK、主题、INTERNET 权限）
-├── app/screen.lua            # 随工程生成的界面工具（工具栏包装、主题色适配）
+├── main.lua                 # Activity 入口：组装界面 + 生命周期（不停止服务器）
+├── service.lua              # ★ Android 前台服务入口：托管 HTTP 服务器
+├── init.lua                 # 打包配置（版本 0.2 + 权限）
+├── app/screen.lua           # 工程自带界面工具（工具栏/主题适配）
 ├── core/
-│   ├── utils.lua             # 单调时钟、大小/时长格式化、URL 编解码、HTML 转义、局域网 IP
-│   ├── config.lua            # 配置默认值、校验、SharedPreferences 持久化
-│   └── logger.lua            # 线程安全日志队列 + 原子计数器
+│   ├── utils.lua            # 时钟、格式化、URL 编解码、HTTP 日期解析、局域网 IP
+│   ├── config.lua           # 配置默认值/校验/持久化（含目录索引、缓存策略）
+│   ├── logger.lua           # 线程安全日志与计数（含平均响应时间、字节数、快照导出）
+│   ├── store.lua            # ★ Service↔Activity 状态与命令通道
+│   └── controller.lua       # ★ Activity 侧控制器（下发命令、拉取状态）
 ├── server/
-│   ├── server.lua            # ServerSocket 生命周期、accept 线程、固定工作线程池
-│   ├── http_parser.lua       # 有上限的 HTTP/1.x 请求解析
-│   ├── response.lua          # 状态行、响应头、错误页、文件流写出
-│   ├── static_file.lua       # 静态文件托管、路径穿越防护、目录索引、默认站点生成
-│   ├── mime.lua              # 扩展名 → MIME
-│   └── router.lua            # 方法分发 + 仅本机可访问的状态 API
-├── ui/
-│   ├── shell.lua             # 工具栏 + 标签页 + 页面切换 + 主线程刷新
-│   ├── theme.lua             # MD3 色板与可复用布局构件（卡片、KV、统计格、按钮、输入框）
-│   ├── dashboard.lua         # 首页
-│   ├── settings.lua          # 服务设置
-│   ├── logs.lua              # 请求日志
-│   ├── files.lua             # 网站文件
-│   └── about.lua             # 关于
-├── res/
-│   ├── layout/main.lua       # 外壳布局（TabLayout + FrameLayout 容器）
-│   └── string/               # 字符串资源（保留工程原有的多语言文件）
-├── www/seed.lua              # 默认站点模板（首次运行写入网站根目录）
-├── tools/selftest.lua        # 真实 loopback 自测脚本（37 项断言）
-└── README.md
+│   ├── host.lua             # ★ 服务器宿主：通知、心跳、命令处理、前台服务生命周期
+│   ├── server.lua           # ServerSocket 生命周期、accept 线程、固定工作线程池
+│   ├── http_parser.lua      # 有上限的请求解析（请求行/Header/请求体/TE 冲突校验）
+│   ├── response.lua         # 响应写出、缓存协商、错误页、流式文件发送
+│   ├── static_file.lua      # 静态托管、穿越防护、目录索引（可选）、默认站点
+│   ├── mime.lua             # 扩展名 → MIME
+│   └── router.lua           # 方法分发 + 仅本机可访问的 API
+├── ui/                      # shell / theme / dashboard / settings / logs / files / about
+├── res/layout/main.lua      # 外壳布局（TabLayout + FrameLayout）
+├── res/string/              # 字符串资源（保留工程原有文件）
+├── www/                     # 默认站点模板（seed.lua + 已生成的静态文件）
+└── tools/
+    ├── selftest.lua         # HTTP 核心自测（91 项断言，真机 Socket 验证）
+    └── verify_service.lua   # 后台服务端到端验证
 ```
 
-运行时生成的网站根目录：`<应用私有目录>/www`（默认 `activity.getLuaDir("www")`），
-首次启动自动创建 `index.html`、`style.css`、`app.js`、`logo.svg`。
+网站根目录：`<应用私有目录>/www`。仅在**目录新建或为空**时写入默认站点，不覆盖用户内容。
 
-## 3. 模块职责
+## 3. 架构：Activity / Service 如何协作
 
-| 模块 | 职责 |
-| --- | --- |
-| `core/utils.lua` | 单调时钟计时、字节/时长格式化、`urlDecode`/`urlEncode`、查询串解析、HTML 转义、局域网 IPv4 枚举（10 秒缓存） |
-| `core/config.lua` | 默认配置、范围校验、`SharedPreferences` 读写（键 `luaserver_config_v1`）、默认根目录 |
-| `core/logger.lua` | 工作线程只做 `AtomicInteger` 计数 + `LinkedBlockingQueue` 入队；主线程 `drain()` 取走并写入有上限的历史 |
-| `server/server.lua` | 启停、端口绑定与释放、accept 线程、固定 N 个工作线程、请求处理、异常兜底、重启 |
-| `server/http_parser.lua` | 逐字节读取，解析请求行/Header/CRLF/URL/Query/百分号编码，含各项长度与超时限制 |
-| `server/response.lua` | 统一状态行与响应头、Content-Length、`Connection: close`、错误页、`Files.copy` 流式发送文件 |
-| `server/static_file.lua` | 根目录 canonical 校验防穿越、目录索引页、默认首页、空文件、首启站点生成 |
-| `server/mime.lua` | 30+ 扩展名映射，未知回落 `application/octet-stream` |
-| `server/router.lua` | GET/HEAD 放行、POST 返回 501、其他方法 405、`/ _api/status` 仅 loopback |
-| `ui/theme.lua` | 从 `activity.themeUtil` 取主题色，统一卡片/文字/按钮/输入框构件，失败回退安全色值 |
-| `ui/shell.lua` | 外壳与页面切换、定时刷新（经 `call()` 回主线程）、`app.destroy()` |
-| `ui/dashboard.lua` | 状态、监听地址、本机/局域网地址、累计/成功/错误/活动连接/运行时长、启停按钮 |
-| `ui/settings.lua` | 端口、监听范围（仅本机 / 局域网）、并发上限、超时、首页文件、根目录；保存后按需自动重启 |
-| `ui/logs.lua` | 最近请求（时间、方法、URL、状态码、耗时、客户端）、清空、上限 200 条 / 最多渲染 60 行 |
-| `ui/files.lua` | 浏览根目录、进入子目录、新建文件夹、新建 HTML、查看信息、删除（长按） |
-| `ui/about.lua` | 版本、简介、Android/Lua/Java VM、运行参数、许可与前台服务限制说明 |
+真机探测确认的三条关键事实（决定了本版架构）：
+
+1. `LuaService` 与 `LuaActivity` 运行在**各自独立的 Lua 状态**，全局变量不共享。
+2. 两者的 `getSharedData` / `setSharedData` 指向同一份 SharedPreferences，**双向可见**。
+3. Service 内 **没有** `activity`、`call`，只有 `thread` / `timer` / `require` / `json` / `file`。
+
+因此数据流是：
+
+```
+Activity（UI）                          Service（服务器）
+   │ 写命令 JSON + startService ────────►  onStartCommand → beat()
+   │                                        ├─ readCommand → start/stop/restart/reload/clearLogs
+   │                                        ├─ Server(ServerSocket, worker pool)
+   │                                        └─ 每秒写状态快照（含日志）到 SharedPreferences
+   │ ◄──────────── 读快照 + 心跳判断存活 ───┘
+```
+
+- Activity 每 300ms 轮询、按运行状态节流（运行 800ms / 停止 2s）刷新界面。
+- `Store.isFresh()` 同时校验单调时钟与墙钟：设备重启或服务被回收后都会判为「不新鲜」，避免显示过期状态。
+- UI 更新走 `timer → call()` 回到主线程（`timer` 回调运行在 `LuaTimer` 线程，直接操作 View 会抛 `CalledFromWrongThreadException`）。
 
 ## 4. 权限说明
 
-`init.lua` 中只有一项：
-
 ```lua
-user_permission = {"INTERNET"}
+user_permission = {
+  "INTERNET",                      -- 创建本地监听 Socket
+  "FOREGROUND_SERVICE",            -- 前台服务
+  "FOREGROUND_SERVICE_DATA_SYNC",  -- 前台服务类型（数据同步）
+  "POST_NOTIFICATIONS",            -- Android 13+ 显示常驻通知
+  "WAKE_LOCK",                     -- 锁屏时继续处理请求
+}
 ```
 
-- `INTERNET` 用于创建本地监听 Socket；未申请任何存储、位置、相机等敏感权限。
-- 网站根目录位于应用私有目录（`getLuaDir("www")`），无需存储权限即可读写。
-- 局域网地址通过 `java.net.NetworkInterface` 枚举得到，不需要 `ACCESS_NETWORK_STATE`。
+未申请存储、位置、相机等敏感权限；网站根目录位于应用私有目录，无需存储权限。
 
-## 5. 安全设计
+> 注意：真机探测显示本机 `areNotificationsEnabled()` 返回 false。若通知未显示，需在系统设置中为本应用开启通知权限。
 
-1. 默认只监听 `127.0.0.1`；局域网模式必须由用户在「设置」中主动切换，页面上有明确风险提示。
-2. 路径穿越防护：先做百分号解码，再拒绝任何 `..` 段、反斜杠、控制字符，最后用 `getCanonicalPath()` 校验结果必须落在根目录内（含软链接逃逸）。
-3. 请求头上限 8 KB / 单行 4 KB / 最多 64 个 Header / 请求目标 2 KB / 请求体 1 MB，超出分别返回 431、414、413。
-4. 每个连接设置 `soTimeout`（默认 10 秒），避免慢连接长期占用工作线程。
-5. 不支持的方法返回 405（带 `Allow`），POST 返回 501；没有上传、删除、命令执行、Lua 代码执行等 HTTP 接口。
-6. `/_api/status` 只对本机（loopback）返回数据，局域网客户端得到 403。
-7. 服务器不是公网服务：局域网模式仅在可信网络中使用。
+## 5. HTTP 能力清单
 
-## 6. 测试方法
+| 项 | 实现 |
+| --- | --- |
+| 方法 | GET、HEAD、POST、OPTIONS；其他方法 405 + `Allow` |
+| HEAD | 与 GET 相同的状态行与 Header（含真实 `Content-Length`），不发送正文 |
+| POST | 读取 `Content-Length` 指定请求体（上限 1 MB）；`/_api/echo` 回显；静态路径 405 |
+| OPTIONS | 204 + `Allow: GET, HEAD, OPTIONS`（API 路径额外含 POST） |
+| 请求限制 | 单行 4 KB、请求头总 8 KB、Header 64 个、目标 2 KB、请求体 1 MB |
+| 请求走私 | `Transfer-Encoding` 与 `Content-Length` 同时出现 → 400 |
+| 缓存 | `ETag` + `Last-Modified`；`If-None-Match` / `If-Modified-Since` → 304 |
+| Cache-Control | 4 档：`no-store` / `no-cache`（协商） / `max-age=300` / `max-age=86400` |
+| 超时 | 每个连接 `soTimeout`（可配 1000–60000 ms） |
+| 并发 | accept 线程 + 固定 N 个工作线程（1–16，默认 4）+ 容量 64 的等待队列 |
+| 大文件 | `Files.copy(Path, OutputStream)` 流式分块写入，不整体载入内存（实测 512 KB / 1.9 s） |
+| 中文文件名 | 支持 URL 编码与 UTF-8 原名 |
 
-### 6.1 内置自测（真机 Socket 验证，无需人工点击）
+## 6. 安全设计
 
-在 NeLuaJ+ 中运行 `tools/selftest.lua`，它会在 `18086` 端口启动服务器、用真实 Socket 客户端发请求、
-再验证停止后端口释放，最后把结果写入工程根目录的 `selftest_report.txt`。
+1. 默认只监听 `127.0.0.1`；局域网必须由用户在设置中主动切换，界面有风险提示。
+2. 路径穿越防护四层：百分号解码后拒绝 `..` 段 / 反斜杠 / 控制字符 / `"?*<>|` / 超长名 → `getCanonicalPath()` 复核必须落在根目录内（可防符号链接逃逸）。
+3. 目录索引**默认关闭**，无默认首页的目录返回 403，不暴露文件列表。
+4. 文件不可读返回 403（不是 500）。
+5. 管理 API（`/_api/status`、`/_api/echo`）**仅 loopback 可访问**，局域网客户端得到 403。
+6. 不提供 HTTP 文件上传/删除、Lua 执行、系统命令执行。
+7. 停止服务时关闭 ServerSocket + 排队连接 + 活动连接，并等待工作线程退出后才返回。
 
-当前实测结果：**37 项断言全部通过**，覆盖
+## 7. 测试
 
-- `GET /`、`/style.css`、`/app.js`、`/logo.svg` 的状态码与 Content-Type
-- HEAD 有 `Content-Length` 且无正文
-- 404（不存在文件 / 未知扩展名）、403（`../`、`%2e%2e`、混合穿越）、400（非法请求行）
-- 401/405/431/414/413 类限制（405 PUT、501 POST、431 超长头、414 超长目标）
-- `/_api/status` 返回可解析 JSON、无 index 目录返回索引页
-- 4 个并发连接全部 200
-- `stop()` 后端口可重新绑定、活动连接归零
-- 切到 `0.0.0.0` + 新端口后监听地址与访问均正确
+### 7.1 已实际执行并通过
 
-### 6.2 手工验收（按需求逐条）
+**HTTP 核心自测**：运行 `tools/selftest.lua` → 结果写入 `selftest_report.txt`，**91 项断言全部通过**，覆盖：
+
+- 静态资源与 MIME（16 种扩展名 + 未知回落）
+- HEAD 与 GET 的 Content-Length 一致、无正文
+- POST 请求体读取（含中文 JSON）、空体、静态路径 405
+- OPTIONS 204 与 Allow（普通路径 / API 路径 / 405 响应头）
+- ETag、Last-Modified、If-None-Match → 304、If-Modified-Since → 304、不匹配 → 200
+- 目录索引关闭 → 403；开启 → 200 且列出文件
+- 404 / 403（`../`、`%2e%2e`、混合）/ 400 / 431 / 414 / 413 / TE+CL 冲突
+- 中文文件名（URL 编码与混合编码）
+- 512 KB 大文件完整性与耗时（1.9 s）
+- 空文件（Content-Length 0、无正文）
+- 4 并发全部 200（原子计数器计数）
+- 停止后端口可重新绑定、活动连接归零、平均响应时间已统计
+- 0.0.0.0 监听与新端口
+
+**后台服务链路**：`tools/verify_service.lua` 已验证到——命令下发后 Service 真实启动、
+状态快照 `running=true / fresh=true` 回传、端口占用错误能正确经 `lastError` 传到 UI。
+（该脚本首次运行时因残留实例占用 8080 而中断，已改为使用独立端口 18095 并加入清理步骤，
+但修正后的完整跑通尚未执行，见 §7.3。）
+
+### 7.2 手工验收步骤
 
 | 步骤 | 期望 |
 | --- | --- |
-| 运行 `main.lua`，点击「启动服务器」 | 首页显示「运行中」、`http://127.0.0.1:8080`，按钮变成「停止服务器」 |
-| 手机浏览器打开 `http://127.0.0.1:8080` | 显示默认站点（蓝绿色卡片页面） |
-| 访问 `/style.css`、`/app.js`、`/logo.svg` | 分别正常返回 CSS、JS、SVG |
-| 访问 `/not-exist.html` | 返回 404 页面 |
-| `curl -I http://127.0.0.1:8080/` 或浏览器开发者工具 | HEAD 返回 200 且带 Content-Length、无正文 |
-| 首页点击「停止服务器」，再次访问 | 浏览器连接失败（端口已释放）；日志页出现「服务器已停止」事件 |
-| 设置页切换为「局域网」并保存 | 首页出现 `http://<手机局域网IP>:8080`；同 Wi-Fi 的可信设备可访问 |
-| 日志页 | 每次请求一行：时间、方法、URL、状态码、耗时、客户端 IP |
-| 文件页 | 能看到 `index.html`、`style.css`、`app.js`、`logo.svg`；可新建文件夹/HTML、删除 |
+| 运行 `main.lua`，点「启动服务器」 | 首页显示运行中、地址 `http://127.0.0.1:8080`、按钮变「停止服务器」、通知栏出现常驻通知 |
+| 浏览器打开该地址 | 显示默认站点 |
+| 按 Home 键切到桌面，等 30 s，再回应用 | 首页仍显示运行中，运行时长在增长（服务未中断） |
+| 切到其他 App 期间用另一台设备/浏览器访问（需先开局域网） | 仍能访问 |
+| 锁屏 1 分钟后解锁回应用 | 服务仍在运行 |
+| 停止服务器后再访问 | 连接失败（端口已释放）、通知消失 |
+| 日志页 | 每请求一行；搜索框输入 `/style` 可过滤；点 `4xx` 只显示错误请求 |
+| 设置页开启目录索引并保存 | 访问无 index 的子目录从 403 变为文件列表 |
+| 设置页切换缓存策略为长缓存并保存 | 响应 `Cache-Control: public, max-age=86400` |
 
-> 说明：本次开发在真机上完成了自测脚本、页面构建、UI 刷新链路与服务器启停的验证；
-> 上面表格中的「手工点击 + 外部浏览器访问」仍需你按步骤确认，未由我代为执行。
+### 7.3 尚未执行（需要你在真机上跑一次）
 
-## 7. 已实现 / 未实现
+- `tools/verify_service.lua` 修正后的完整通过（含真实 HTTP 请求、统计回传、停止后端口释放）
+- Activity 重建（旋转屏幕）后状态是否正常恢复
+- 长时间后台（>30 分钟）与系统省电策略下的存活表现
+- 另一台设备经局域网访问
 
-已实现：
+## 8. 已完成 / 未完成
 
-- HTTP/1.1 GET、HEAD；POST 返回 501；405/403/404/400/413/414/431/500/501/505 状态与统一错误页
-- 静态文件托管（HTML/CSS/JS/JSON/TXT/PNG/JPG/SVG/ICO/WebP/WOFF/WOFF2 等）、未知 MIME 回退
-- 目录索引页、默认首页、空文件、URL 编码
-- 路径穿越防护（含编码与软链接）
-- 启动/停止/重启、端口修改、仅本机/局域网监听、并发上限 1–16、请求超时、根目录与首页可配置
-- 配置持久化；首启自动生成默认站点
-- 首页统计（累计/成功/错误/活动连接/运行时长）、请求日志（上限 + 清空）、网站文件管理、关于页
-- 主线程 UI 更新（工作线程不触碰 View）；退出应用停止服务器并释放端口
+**已完成**：前述全部 HTTP 能力、前台服务常驻与通知、SharedPreferences 状态通道、
+启停/重启/配置热更新、路径穿越防护、目录索引开关、缓存策略、平均响应时间统计、
+日志搜索与过滤、文件管理、复制访问地址、Activity 销毁不停服。
 
-未实现（第一版有意不做）：
-
-- POST/PUT 请求体解析（返回 501 / 405）
-- 断点续传、Range、gzip 压缩、ETag/If-Modified-Since 缓存协商
+**未完成 / 有意不做**：
+- HTTP/2、WebSocket、chunked 请求体解析（明确返回 501）
+- Range 断点续传 / 分块下载（响应头中显式声明 `Accept-Ranges: none`）
 - HTTPS、Basic 认证、IP 白名单
-- HTTP 文件上传/删除接口（安全考虑，管理操作只在应用界面内）
-- Android Foreground Service 常驻运行、通知栏控制
-- 文件内容编辑器（只有新建 HTML 与删除）
+- HTTP 层文件上传/删除（管理操作只在应用界面内）
+- 通知栏「停止服务」按钮（跨进程广播在当前运行时下未验证，未实现）
+- 开机自启、服务崩溃自愈
 
-## 8. 已知问题
+## 9. 已知限制
 
-1. **服务器只在应用前台/进程存活期间运行。** `thread()` 是 Java 线程，不是 Android Service；
-   应用被系统回收或用户主动退出后服务停止。这是第一版的明确边界，界面也有说明。
-2. `timer()` 回调运行在 `LuaTimer` 线程（不是主线程），因此 `ui/shell.lua` 的刷新通过 `call()` 回到主线程；
-   如果后续新增定时逻辑，务必同样包一层 `call()`，否则会抛 `CalledFromWrongThreadException`。
-3. 监听范围切换后若原端口被其他应用占用，重启会失败并提示「端口已被占用」；界面此时保持未运行状态。
-4. 局域网 IP 通过 `NetworkInterface` 枚举，VPN/多网卡环境下可能选中非预期网卡（优先返回第一个非回环 IPv4）。
-5. 目录索引页不含分页，超大目录（数千文件）会一次性渲染。
-6. 未做连接数限流之外的背压：并发上限之外的连接在 `pending` 队列（容量 64）里排队，超出会被直接关闭。
-7. 静态文件发送用 `Files.copy(Path, OutputStream)`；客户端中途断开时不再记录为 500，但该请求也不会出现在日志中。
+1. **Android 后台限制**：前台服务能显著延长存活，但系统在极端内存压力或厂商省电策略下仍可能回收进程。本应用不承诺永久运行，也不使用隐藏进程、自启绕过等不可靠方案。
+2. **通知权限**：Android 13+ 需要用户手动授予通知权限；未授予时服务仍能运行，但通知不可见（会影响用户感知与系统保活倾向）。
+3. **服务与 Activity 是两个 Lua 状态**：Service 内的日志/统计无法被 Activity 直接读取，必须经 SharedPreferences 序列化；因此日志上限为 120 条，随心跳整体下发。
+4. **停止响应有约 1 s 延迟**：Activity 发命令后需等服务下一次心跳（1 s）才反映「已停止」。
+5. **端口占用**：若上一次服务实例未完全退出，新实例会提示「端口已被占用，请更换端口」，此时需在设置中换端口或重开应用。
+6. **局域网 IP 选择**：`NetworkInterface` 枚举取第一个非回环 IPv4，VPN/多网卡环境可能选中非预期网卡。
+7. **目录索引无分页**：超大目录一次性渲染。
+8. **大文件发送**：依赖 `Files.copy` 的流式复制；发送期间若文件被修改，实际字节数可能与 `Content-Length` 不一致。
 
-## 9. 后续建议
+## 10. APK 打包
 
-1. 用 `startService("server_service.lua")` + 前台通知实现常驻服务，并处理 Android 12+ 的后台限制。
-2. 引入 `Range` + 分块读取，改善大文件与视频播放体验；配合 `ETag`/`If-None-Match` 减少重复传输。
-3. 为 POST 增加有上限的请求体解析，提供受 token 保护的最小 JSON API。
-4. 增加 LAN 模式下的访问口令（Basic Auth）与客户端白名单，降低误暴露风险。
-5. 把日志落盘（环形文件）并支持导出，便于排查长时间运行的问题。
-6. 文件页加入文本编辑、重命名、上传（走应用内选择器，不开放 HTTP 上传）。
-7. 增加「收藏地址二维码」，方便局域网内其他设备扫码访问。
+1. NeLuaJ+ 中打开工程根目录。
+2. 确认 `init.lua`：`package_name = "com.xiaolin.luaserver"`、`ver_name = "0.2"`、`ver_code = "2"`、权限列表（见 §4）。
+3. 使用 IDE 的打包功能生成 APK。
+4. 安装后首次启动：若系统未授予通知权限，进入「应用信息 → 通知」手动开启。
+5. 打包后网站根目录为应用私有目录下的 `www`（首次运行自动创建并写入默认站点）。
 
-## 10. 调试提示
+## 11. 调试
 
-- 工程内保留了 NeLuaJ+ 的 `vConsole.lua`，需要悬浮调试窗时在 `main.lua` 末尾加 `require "vConsole"` 即可；
-  默认不加载，以免遮挡正式界面。
-- `tools/selftest.lua` 可直接作为回归测试：改动服务器核心后先跑它，再看 `selftest_report.txt`。
+- `tools/selftest.lua`：HTTP 核心回归，改动 `server/` 后先跑它。
+- `tools/verify_service.lua`：后台服务链路验证（使用端口 18095）。
+- 服务运行期异常会写入应用私有目录的 `luaserver_service_error.txt`；UI 刷新异常写入 `luaserver_ui_error.txt`。
+- 需要悬浮调试窗时，在 `main.lua` 末尾加 `require "vConsole"`（默认不加载）。

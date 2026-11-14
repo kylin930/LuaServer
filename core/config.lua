@@ -3,35 +3,75 @@ local M = {}
 
 local KEY = "luaserver_config_v1"
 
+-- 缓存策略：静态资源如何声明可缓存性（会同时配合 ETag / Last-Modified 协商）
+M.CACHE_MODES = { "off", "validate", "short", "long" }
+
+M.CACHE_LABELS = {
+  off = "不缓存（no-store）",
+  validate = "协商缓存（ETag / Last-Modified）",
+  short = "短缓存（5 分钟）",
+  long = "长缓存（1 天）",
+}
+
+local CACHE_MAX_AGE = {
+  off = nil,
+  validate = nil,      -- 使用 no-cache + ETag 协商
+  short = 300,
+  long = 86400,
+}
+
+M.cacheMaxAge = function(mode)
+  return CACHE_MAX_AGE[mode] or nil
+end
+
 local DEFAULTS = {
   port = 8080,
-  listenLan = false,     -- false: 127.0.0.1  true: 0.0.0.0
+  listenLan = false,       -- false: 127.0.0.1  true: 0.0.0.0
   maxConnections = 4,
   timeoutMs = 10000,
   indexFile = "index.html",
-  rootPath = nil,        -- nil 表示使用应用私有 www 目录
+  directoryIndex = false,  -- 目录索引默认关闭
+  cacheMode = "validate",
+  rootPath = nil,          -- nil 表示使用默认 www 目录
 }
 
-function M.defaultRoot()
-  local ok, path = pcall(function() return activity.getLuaDir("www") end)
-  if ok and type(path) == "string" and #path > 0 then return path end
+--- 默认网站根目录：应用私有文件目录下的 www
+-- 必须与"当前运行的脚本位置"无关：
+--   * getLuaDir() 在从子目录（如 tools/）运行时会返回子目录，曾导致默认根目录被污染成 tools/www；
+--   * getFilesDir() 由包名决定，Activity 与 Service 取值一致，且属于应用私有目录。
+function M.defaultRoot(context)
+  local host = context or activity
+  local dir = nil
+  pcall(function() dir = host.getFilesDir() end)
+  if dir ~= nil then
+    local path = nil
+    pcall(function() path = dir.getAbsolutePath() end)
+    if type(path) == "string" and #path > 0 then
+      return path .. "/www"
+    end
+  end
+  -- 退化方案：仍使用 Lua 工作目录
+  local ok, fallback = pcall(function() return host.getLuaDir("www") end)
+  if ok and type(fallback) == "string" and #fallback > 0 then return fallback end
   return "/sdcard/LuaServer/www"
 end
 
-function M.defaults()
+function M.defaults(context)
   return {
     port = DEFAULTS.port,
     listenLan = DEFAULTS.listenLan,
     maxConnections = DEFAULTS.maxConnections,
     timeoutMs = DEFAULTS.timeoutMs,
     indexFile = DEFAULTS.indexFile,
-    rootPath = M.defaultRoot(),
+    directoryIndex = DEFAULTS.directoryIndex,
+    cacheMode = DEFAULTS.cacheMode,
+    rootPath = M.defaultRoot(context),
   }
 end
 
 --- 取值范围收敛，保证线程/端口参数始终可用
-function M.normalize(cfg)
-  cfg = cfg or M.defaults()
+function M.normalize(cfg, context)
+  cfg = cfg or M.defaults(context)
   local port = tonumber(cfg.port) or DEFAULTS.port
   if port < 1024 then port = 1024 end
   if port > 65535 then port = 65535 end
@@ -48,14 +88,23 @@ function M.normalize(cfg)
   cfg.timeoutMs = math.floor(timeout)
 
   cfg.listenLan = cfg.listenLan and true or false
+  cfg.directoryIndex = cfg.directoryIndex and true or false
 
   local indexFile = tostring(cfg.indexFile or "")
   indexFile = string.gsub(indexFile, "[/\\]", "")
   if indexFile == "" then indexFile = DEFAULTS.indexFile end
   cfg.indexFile = indexFile
 
+  local mode = tostring(cfg.cacheMode or "")
+  local valid = false
+  for i = 1, #M.CACHE_MODES do
+    if M.CACHE_MODES[i] == mode then valid = true break end
+  end
+  if not valid then mode = DEFAULTS.cacheMode end
+  cfg.cacheMode = mode
+
   local root = tostring(cfg.rootPath or "")
-  if root == "" then root = M.defaultRoot() end
+  if root == "" then root = M.defaultRoot(context) end
   cfg.rootPath = root
   return cfg
 end
@@ -82,9 +131,10 @@ function M.validate(cfg)
   return true
 end
 
-function M.load()
-  local cfg = M.defaults()
-  local ok, raw = pcall(function() return activity.getSharedData(KEY) end)
+function M.load(context)
+  local host = context or activity
+  local cfg = M.defaults(host)
+  local ok, raw = pcall(function() return host.getSharedData(KEY) end)
   if ok and type(raw) == "string" and #raw > 2 then
     local decodedOk, saved = pcall(json.decode, raw)
     if decodedOk and type(saved) == "table" then
@@ -93,25 +143,28 @@ function M.load()
       if type(saved.maxConnections) == "number" then cfg.maxConnections = saved.maxConnections end
       if type(saved.timeoutMs) == "number" then cfg.timeoutMs = saved.timeoutMs end
       if type(saved.indexFile) == "string" and saved.indexFile ~= "" then cfg.indexFile = saved.indexFile end
+      if type(saved.directoryIndex) == "boolean" then cfg.directoryIndex = saved.directoryIndex end
+      if type(saved.cacheMode) == "string" then cfg.cacheMode = saved.cacheMode end
       if type(saved.rootPath) == "string" and saved.rootPath ~= "" then cfg.rootPath = saved.rootPath end
     end
   end
-  return M.normalize(cfg)
+  return M.normalize(cfg, host)
 end
 
-function M.save(cfg)
+function M.save(cfg, context)
+  local host = context or activity
   local ok, err = pcall(function()
-    activity.setSharedData(KEY, json.encode(cfg))
+    host.setSharedData(KEY, json.encode(cfg))
   end)
   if not ok then return false, tostring(err) end
   return true
 end
 
 --- 恢复默认值（保留网站根目录）
-function M.reset(cfg)
-  local fresh = M.defaults()
+function M.reset(cfg, context)
+  local fresh = M.defaults(context)
   fresh.rootPath = cfg and cfg.rootPath or fresh.rootPath
-  return M.normalize(fresh)
+  return M.normalize(fresh, context)
 end
 
 return M

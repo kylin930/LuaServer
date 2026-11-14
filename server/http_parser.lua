@@ -10,7 +10,7 @@ M.MAX_REQUEST_LINE = 4096     -- 单行上限（请求行 / 每个 Header）
 M.MAX_TARGET = 2048           -- 请求目标（路径 + 查询串）上限
 M.MAX_HEADER_BYTES = 8192     -- 整个请求头上限，超出返回 431
 M.MAX_HEADER_COUNT = 64       -- Header 数量上限
-M.MAX_BODY = 1048576          -- 允许 drain 的请求体上限，超出直接拒绝
+M.MAX_BODY = 1048576          -- 允许读取/丢弃的请求体上限，超出返回 413
 M.MAX_LEADING_BLANKS = 4      -- 容忍客户端在请求行前多发的空行
 
 local Reader = {}
@@ -40,26 +40,46 @@ function Reader:readLine(maxLen)
   return table.concat(chars)
 end
 
+--- 读取指定长度的请求体（原始字节字符串）
+-- 返回 body, nil 表示成功；返回 nil, reason 表示失败
+function Reader:readBody(count)
+  local remaining = tonumber(count) or 0
+  if remaining <= 0 then return "" end
+  if remaining > M.MAX_BODY then return nil, "too-large" end
+  local chunks, read = {}, 0
+  while read < remaining do
+    local byte = self.stream.read()
+    if byte == -1 then return table.concat(chunks), "truncated" end
+    read = read + 1
+    chunks[read] = string.char(byte)
+  end
+  return table.concat(chunks)
+end
+
 --- 丢弃 count 字节请求体，避免未读数据导致连接被 RST
 function Reader:drain(count)
   local remaining = tonumber(count) or 0
   if remaining <= 0 then return true end
   if remaining > M.MAX_BODY then return false, "too-large" end
+  local buffer = 4096
   while remaining > 0 do
-    local byte = self.stream.read()
-    if byte == -1 then break end
-    remaining = remaining - 1
+    local chunk = math.min(buffer, remaining)
+    for _ = 1, chunk do
+      if self.stream.read() == -1 then return true end
+    end
+    remaining = remaining - chunk
   end
   return true
 end
 
 --- 规范化绝对形式目标（GET http://host/path）为 path
 local function stripScheme(target)
-  if string.sub(target, 1, 7) == "http://" then
+  local lowered = string.lower(target)
+  if string.sub(lowered, 1, 7) == "http://" then
     local slash = string.find(target, "/", 8)
     return slash and string.sub(target, slash) or "/"
   end
-  if string.sub(target, 1, 8) == "https://" then
+  if string.sub(lowered, 1, 8) == "https://" then
     local slash = string.find(target, "/", 9)
     return slash and string.sub(target, slash) or "/"
   end
@@ -79,7 +99,8 @@ function M.parse(reader)
   end
   if line == nil or line == "" then return nil, 400, "请求行为空" end
 
-  local method, target, version = string.match(line, "^(%u+) (%S+) (HTTP/%d%.%d)$")
+  -- 方法名允许 HTTP token 字符（含 - _ 等，便于识别非法方法并返回 405 而非 400）
+  local method, target, version = string.match(line, "^([%w!#%$%%&'%*%+%-.%^_`|~]+) (%S+) (HTTP/%d%.%d)$")
   if not method then return nil, 400, "请求行格式错误" end
   if #target > M.MAX_TARGET then return nil, 414, "请求目标过长" end
   if version ~= "HTTP/1.1" and version ~= "HTTP/1.0" then
@@ -117,6 +138,10 @@ function M.parse(reader)
   end
   if reader.headerBytes > M.MAX_HEADER_BYTES then return nil, 431, "请求头过大" end
 
+  local transferEncoding = headers["transfer-encoding"]
+  local chunked = transferEncoding ~= nil
+    and string.find(string.lower(transferEncoding), "chunked", 1, true) ~= nil
+
   local contentLength = 0
   local rawLength = headers["content-length"]
   if rawLength ~= nil then
@@ -126,9 +151,10 @@ function M.parse(reader)
     contentLength = math.floor(parsed)
   end
 
-  local transferEncoding = headers["transfer-encoding"]
-  local chunked = transferEncoding ~= nil
-    and string.find(string.lower(transferEncoding), "chunked", 1, true) ~= nil
+  -- RFC 7230：同时出现 Transfer-Encoding 与 Content-Length 属请求走私风险，直接拒绝
+  if chunked and rawLength ~= nil then
+    return nil, 400, "不允许同时使用 Transfer-Encoding 与 Content-Length"
+  end
 
   return {
     method = method,

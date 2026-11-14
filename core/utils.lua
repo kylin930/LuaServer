@@ -43,11 +43,17 @@ function M.formatUptime(ms)
   return string.format("%d秒", seconds)
 end
 
+local WEEKDAYS = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+
 --- HTTP 日期：Fri, 14 Nov 2026 19:19:41 GMT
-function M.httpDate()
+-- epochMs 可选：传入毫秒时间戳时输出该时刻，否则输出当前时间
+function M.httpDate(epochMs)
   local Calendar = luajava.bindClass "java.util.Calendar"
   local TimeZone = luajava.bindClass "java.util.TimeZone"
   local cal = Calendar.getInstance(TimeZone.getTimeZone("GMT"))
+  if type(epochMs) == "number" and epochMs > 0 then
+    cal.setTimeInMillis(math.floor(epochMs))
+  end
   local dow = cal.get(Calendar.DAY_OF_WEEK)
   local day = cal.get(Calendar.DAY_OF_MONTH)
   local month = MONTHS[cal.get(Calendar.MONTH) + 1]
@@ -55,8 +61,39 @@ function M.httpDate()
   local h = cal.get(Calendar.HOUR_OF_DAY)
   local mi = cal.get(Calendar.MINUTE)
   local s = cal.get(Calendar.SECOND)
-  local week = ({ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" })[dow]
-  return string.format("%s, %02d %s %04d %02d:%02d:%02d GMT", week, day, month, year, h, mi, s)
+  return string.format("%s, %02d %s %04d %02d:%02d:%02d GMT",
+    WEEKDAYS[dow] or "Thu", day, month, year, h, mi, s)
+end
+
+--- 解析 HTTP 日期头为 epoch 秒；无法解析返回 nil
+-- 支持 RFC 1123 (Sun, 06 Nov 1994 08:49:37 GMT) 与 RFC 850 / asctime 常见形式
+local MONTH_INDEX = {
+  Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
+  Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12,
+}
+
+function M.parseHttpDate(text)
+  if type(text) ~= "string" or text == "" then return nil end
+  local day, monName, year, h, mi, s = string.match(text,
+    "(%d%d?)%s+([A-Za-z]+)%s+(%d%d%d%d)%s+(%d%d):(%d%d):(%d%d)")
+  if not day then
+    -- asctime: Sun Nov  6 08:49:37 1994
+    monName, day, h, mi, s, year = string.match(text,
+      "^[A-Za-z]+%s+([A-Za-z]+)%s+(%d%d?)%s+(%d%d):(%d%d):(%d%d)%s+(%d%d%d%d)")
+  end
+  if not day then return nil end
+  local month = MONTH_INDEX[monName]
+  if not month then return nil end
+  local ok, epoch = pcall(function()
+    local Calendar = luajava.bindClass "java.util.Calendar"
+    local TimeZone = luajava.bindClass "java.util.TimeZone"
+    local cal = Calendar.getInstance(TimeZone.getTimeZone("GMT"))
+    cal.clear()
+    cal.set(tonumber(year), month - 1, tonumber(day), tonumber(h), tonumber(mi), tonumber(s))
+    return math.floor(cal.getTimeInMillis() / 1000)
+  end)
+  if ok and type(epoch) == "number" then return epoch end
+  return nil
 end
 
 function M.escapeHtml(text)
