@@ -1,0 +1,42 @@
+LuaServer 自测报告
+端口 18086
+
+[PASS] 服务器启动  (端口 18086)
+[PASS] GET / -> 200  (实际 200)
+[PASS] GET / Content-Type 为 HTML  (text/html; charset=utf-8)
+[PASS] GET / 正文含 LuaServer  (正文长度 2416)
+[PASS] GET /style.css -> 200  (实际 200)
+[PASS] CSS MIME  (text/css; charset=utf-8)
+[PASS] GET /app.js -> 200  (实际 200)
+[PASS] JS MIME  (application/javascript; charset=utf-8)
+[PASS] GET /logo.svg -> 200  (实际 200)
+[PASS] SVG MIME  (image/svg+xml)
+[PASS] 未知扩展名 -> 404  (实际 404)
+[PASS] HEAD / -> 200  (实际 200)
+[PASS] HEAD 带 Content-Length  (2416)
+[PASS] HEAD 无正文  (正文长度 0)
+[PASS] 不存在文件 -> 404  (实际 404)
+[PASS] 路径穿越 ../ -> 403  (实际 403)
+[PASS] 编码穿越 %2e%2e -> 403  (实际 403)
+[PASS] 混合穿越 -> 403/404  (实际 403)
+[PASS] POST -> 501  (实际 501)
+[PASS] PUT -> 405  (实际 405)
+[PASS] 非法请求行 -> 400  (实际 400)
+[PASS] 超长请求头 -> 431  (实际 431)
+[PASS] 超长请求目标 -> 414  (实际 414)
+[PASS] GET /_api/status -> 200  (实际 200)
+[PASS] 状态 API 为 JSON  (application/json; charset=utf-8)
+[PASS] 状态 JSON 可解析  (18086)
+[PASS] 无 index 的目录返回索引页  (实际 200)
+[PASS] 4 个并发请求全部 200  (完成 4，成功 4)
+[PASS] stop() 返回成功  (true)
+[PASS] 停止后端口可重新绑定
+[PASS] 请求计数已累加  (total=21)
+[PASS] 活动连接归零  (active=0)
+[PASS] 局域网监听启动  (18087)
+[PASS] 监听地址为 0.0.0.0  (0.0.0.0)
+[PASS] 端口已切换  (18087)
+[PASS] 新端口返回 200  (实际 200)
+[PASS] 局域网服务器已停止
+
+合计：37 通过，0 失败

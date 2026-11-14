@@ -1,22 +1,34 @@
+-- res/layout/main.lua — 应用外壳布局：顶部工具栏 + 标签页 + 页面容器
+--
+-- 具体页面由 ui/dashboard、ui/settings、ui/logs、ui/files、ui/about 动态创建，
+-- 并通过 ui/shell.lua 加到 container 中。
 local bindClass = luajava.bindClass
 local LinearLayout = bindClass "android.widget.LinearLayout"
-local TextView = bindClass "android.widget.TextView"
-local ScrollView = bindClass "android.widget.ScrollView"
+local FrameLayout = bindClass "android.widget.FrameLayout"
+local TabLayout = bindClass "com.google.android.material.tabs.TabLayout"
 local Screen = require "app.screen"
-local colors = Screen.colors()
 
--- Set false for a truly toolbar-free NoActionBar page.
+-- ActionBar 主题会自带工具栏；NoActionBar 主题下由 Screen.wrap 补一个 MaterialToolbar
 local showToolbar = true
+
 return Screen.wrap({
-  ScrollView,
-  layout_width = "match", layout_height = "match", fillViewport = true,
+  LinearLayout,
+  orientation = "vertical",
+  layout_width = "match",
+  layout_height = "match",
   {
-    LinearLayout,
-    orientation = "vertical", layout_width = "match", layout_height = "wrap",
-    padding = "20dp",
-    { TextView, text = res.string.app_title, textSize = "24sp", textColor = colors.text,
-      layout_width = "match", layout_height = "wrap" },
-    { TextView, text = res.string.blank_message, textSize = "16sp", textColor = colors.secondary,
-      layout_width = "match", layout_height = "wrap", layout_marginTop = "12dp" },
+    TabLayout,
+    id = "tabs",
+    layout_width = "match",
+    layout_height = "wrap",
+    TabMode = 1,     -- 可滚动，标签多时不挤压
+    TabGravity = 0,  -- 填满宽度
+  },
+  {
+    FrameLayout,
+    id = "container",
+    layout_width = "match",
+    layout_height = "0dp",
+    layout_weight = 1,
   },
 }, showToolbar)

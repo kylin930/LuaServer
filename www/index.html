@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LuaServer · 站点已就绪</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <img src="/logo.svg" alt="LuaServer" width="40" height="40">
+  <div>
+    <h1>LuaServer</h1>
+    <p class="sub">手机上的轻量 HTTP 服务器</p>
+  </div>
+</header>
+
+<main>
+  <section class="card hero">
+    <p class="eyebrow">站点已就绪</p>
+    <h2>这个页面由你的手机托管</h2>
+    <p class="muted">
+      默认站点位于应用的 <code>www</code> 目录。你可以把 HTML、CSS、JS、图片
+      放进这个目录，然后通过局域网访问。
+    </p>
+    <div class="actions">
+      <a class="btn primary" href="/style.css">查看样式表</a>
+      <a class="btn" href="/app.js">查看脚本</a>
+      <a class="btn" href="/logo.svg">查看图标</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>服务器状态</h3>
+    <div id="status" class="status">正在读取状态…</div>
+    <p class="muted small">
+      <code>/_api/status</code> 接口仅允许本机（127.0.0.1）访问，用于验证 HTTP API 是否工作。
+    </p>
+  </section>
+
+  <section class="card">
+    <h3>静态资源测试</h3>
+    <ul class="links">
+      <li><a href="/index.html">index.html</a><span>HTML</span></li>
+      <li><a href="/style.css">style.css</a><span>CSS</span></li>
+      <li><a href="/app.js">app.js</a><span>JavaScript</span></li>
+      <li><a href="/logo.svg">logo.svg</a><span>SVG</span></li>
+      <li><a href="/not-exist.html">not-exist.html</a><span>应返回 404</span></li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h3>常见状态码</h3>
+    <ul class="links">
+      <li><span class="tag">404</span><span>文件不存在</span></li>
+      <li><span class="tag">403</span><span>路径穿越被拒绝</span></li>
+      <li><span class="tag">405</span><span>不支持的方法</span></li>
+      <li><span class="tag">501</span><span>POST 暂未实现</span></li>
+    </ul>
+  </section>
+</main>
+
+<footer class="foot">
+  <p>LuaServer · 由 NeLuaJ+ 与 Lua 驱动</p>
+  <p class="muted small">仅在应用运行期间提供服务；请勿将此服务直接暴露到公网。</p>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

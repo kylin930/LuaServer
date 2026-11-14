@@ -1,0 +1,36 @@
+[PASS] 外壳启动  (table: 66dc37f)
+[PASS] 工具栏存在
+[PASS] 初始副标题为已停止  (已停止)
+[PASS] 标签页数量为 5  (5)
+[PASS] 首页已挂载
+[PASS] 服务器启动  (8080)
+[PASS] GET / -> 200  (200)
+[PASS] GET /index.html -> 200  (200)
+[PASS] GET /style.css -> 200  (200)
+[PASS] GET /app.js -> 200  (200)
+[PASS] GET /logo.svg -> 200  (200)
+[PASS] GET /missing.html -> 404  (404)
+[PASS] GET /../main.lua -> 403  (403)
+[PASS] GET /_api/status -> 200  (200)
+[PASS] 副标题反映运行状态  (运行中 · 127.0.0.1:8080)
+[PASS] 统计已累计 8 次请求  (total=8)
+[PASS] 成功 6 次 / 错误 2 次  (6/2)
+[PASS] 活动连接归零  (active=0)
+[PASS] 首页显示运行中  (运行中)
+[PASS] 首页显示本机地址  (http://127.0.0.1:8080)
+[PASS] 首页按钮为停止  (停止服务器)
+[PASS] 首页累计请求数  (8)
+[PASS] 日志页有记录  (rows=9)
+[PASS] 日志页汇总含累计
+[PASS] 文件页可列出默认站点  (rows=4)
+[PASS] 文件页首页状态  (存在 · index.html)
+[PASS] 设置页端口回填  (8080)
+[PASS] 关于页显示 Lua 版本  (LuaJ++ 1.0)
+[PASS] 关于页显示监听范围  (127.0.0.1（仅本机）)
+[PASS] 停止成功  (true)
+[PASS] 停止后状态为未运行
+[PASS] 端口已释放，可重新绑定
+[PASS] destroy 后定时器已停止
+
+合计：33 通过，0 失败
+DONE
